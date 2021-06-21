@@ -1,3 +1,3 @@
-eventlet==0.30.2
+eventlet
 pbr>=1.9
 transitions
