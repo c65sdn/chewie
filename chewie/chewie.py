@@ -105,6 +105,14 @@ class Chewie:
         # force-killed the way eventlet greenthreads could, so each loop
         # has to bail on its own.
         self._stop_event = threading.Event()
+        # The transitions library's ``Machine`` (used by both the EAP and
+        # MAB state machines) is not thread-safe. Under eventlet the
+        # cooperative scheduling implicitly serialised event() calls; with
+        # OS threads receive_eap_messages, receive_mab_messages,
+        # receive_radius_messages and timer callbacks can all race to
+        # fire state machine events. Hold this lock around every event()
+        # path to keep transitions atomic.
+        self._sm_lock = threading.Lock()
 
     def run(self):
         """Set up chewie and start its worker threads."""
@@ -323,7 +331,8 @@ class Chewie:
 
         for _, state_machine in self.state_machines[port_id_str].items():
             event = EventPortStatusChange(status)
-            state_machine.event(event)
+            with self._sm_lock:
+                state_machine.event(event)
 
     def setup_eap_socket(self):
         """Setup EAP socket"""
@@ -383,7 +392,8 @@ class Chewie:
         message_id = -2
         state_machine = self.get_state_machine(src_mac, port_id, message_id)
         event = EventMessageReceived(ethernet_packet, port_id)
-        state_machine.event(event)
+        with self._sm_lock:
+            state_machine.event(event)
         # NOTE: Should probably throttle packets in once one is received
 
     def receive_eap_messages(self):
@@ -442,7 +452,8 @@ class Chewie:
         else:
             event = EventMessageReceived(eap, dst_mac)
 
-        state_machine.event(event)
+        with self._sm_lock:
+            state_machine.event(event)
 
     def send_radius_messages(self):
         """send RADIUS messages to RADIUS Server forever."""
@@ -483,7 +494,8 @@ class Chewie:
         """sends a radius message to the state machine"""
         event = self.radius_lifecycle.build_event_radius_message_received(radius)
         state_machine = self.get_state_machine_from_radius_packet_id(radius.packet_id)
-        state_machine.event(event)
+        with self._sm_lock:
+            state_machine.event(event)
 
     def get_state_machine_from_radius_packet_id(self, packet_id):
         """Gets a FullEAPStateMachine from the RADIUS message packet_id
