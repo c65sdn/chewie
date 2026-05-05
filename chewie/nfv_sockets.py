@@ -1,9 +1,9 @@
 """Supplicant-Facing Sockets"""
 
+import socket
 import struct
 from abc import ABC, abstractmethod
 from fcntl import ioctl
-from eventlet.green import socket
 
 from chewie.mac_address import MacAddress
 from chewie.utils import get_logger
