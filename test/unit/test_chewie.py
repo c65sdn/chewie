@@ -510,6 +510,12 @@ class ChewieTestCase(unittest.TestCase):
 
         while not self.fake_scheduler.jobs:
             time.sleep(SHORT_SLEEP)
+        # Stop chewie before draining jobs. Under the previous eventlet
+        # model the test relied on the chewie greenlet not advancing
+        # while the test thread was running; with real OS threads chewie
+        # would otherwise keep consuming the bad-message-id replies in
+        # parallel and shuffle the state machine past TIMEOUT_FAILURE.
+        self.chewie.shutdown()
         self.fake_scheduler.run_jobs()
 
         self.assertEqual(
