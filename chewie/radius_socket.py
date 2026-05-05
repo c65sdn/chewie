@@ -1,6 +1,7 @@
 """Handle the RADIUS socket
 """
-from eventlet.green import socket
+import socket
+
 from chewie.utils import get_logger
 
 

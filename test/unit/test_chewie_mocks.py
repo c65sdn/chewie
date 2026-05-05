@@ -46,7 +46,6 @@ class ChewieWithMocksTestCase(unittest.TestCase):
     @patch("chewie.chewie.Chewie.running", Mock(side_effect=[True, False]))
     @patch("chewie.chewie.MessageParser.ethernet_parse")
     @patch("chewie.chewie.FullEAPStateMachine")
-    @patch("chewie.chewie.sleep", Mock())
     def test_eap_packet_in_goes_to_new_state_machine(
         self, state_machine, ethernet_parse
     ):  # pylint: disable=invalid-name
@@ -62,7 +61,6 @@ class ChewieWithMocksTestCase(unittest.TestCase):
 
     @patch("chewie.chewie.Chewie.running", Mock(side_effect=[True, False]))
     @patch("chewie.chewie.MessagePacker.ethernet_pack")
-    @patch("chewie.chewie.sleep", Mock())
     def test_eap_output_packet_gets_packed_and_sent(
         self, ethernet_pack
     ):  # pylint: disable=invalid-name
@@ -78,7 +76,6 @@ class ChewieWithMocksTestCase(unittest.TestCase):
     @patch("chewie.chewie.Chewie.running", Mock(side_effect=[True, False]))
     @patch("chewie.chewie.MessageParser.radius_parse")
     @patch("chewie.chewie.Chewie.get_state_machine_from_radius_packet_id")
-    @patch("chewie.chewie.sleep", Mock())
     def test_radius_packet_in_goes_to_state_machine(
         self, state_machine, radius_parse
     ):  # pylint: disable=invalid-name
@@ -103,7 +100,6 @@ class ChewieWithMocksTestCase(unittest.TestCase):
         state_machine().event.assert_called_with("fake event")
 
     @patch("chewie.chewie.Chewie.running", Mock(side_effect=[True, False]))
-    @patch("chewie.chewie.sleep", Mock())
     def test_radius_output_packet_gets_packed_and_sent(
         self,
     ):  # pylint: disable=invalid-name
