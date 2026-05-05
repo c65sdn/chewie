@@ -1,6 +1,6 @@
 """ Entry point for 802.1X speaker. """
-from eventlet import sleep, GreenPool
-from eventlet.queue import Queue
+import threading
+from queue import Queue
 
 from chewie import timer_scheduler
 from chewie.eap import Eap
@@ -97,15 +97,25 @@ class Chewie:
 
         self.eap_socket = None
         self.mab_socket = None
-        self.pool = None
-        self.eventlets = None
+        self.threads = []
         self.radius_socket = None
         self.interface_index = None
-
-        self.eventlets = []
+        # Set during ``shutdown()`` to take cooperative loops out of their
+        # blocking get()/recv() and have them exit. Python threads can't be
+        # force-killed the way eventlet greenthreads could, so each loop
+        # has to bail on its own.
+        self._stop_event = threading.Event()
+        # The transitions library's ``Machine`` (used by both the EAP and
+        # MAB state machines) is not thread-safe. Under eventlet the
+        # cooperative scheduling implicitly serialised event() calls; with
+        # OS threads receive_eap_messages, receive_mab_messages,
+        # receive_radius_messages and timer callbacks can all race to
+        # fire state machine events. Hold this lock around every event()
+        # path to keep transitions atomic.
+        self._sm_lock = threading.Lock()
 
     def run(self):
-        """setup chewie and start socket eventlet threads"""
+        """Set up chewie and start its worker threads."""
         self.logger.info("Starting")
         self.setup_eap_socket()
         self.setup_mab_socket()
@@ -113,28 +123,49 @@ class Chewie:
         self.start_threads_and_wait()
 
     def running(self):
-        """Used to nicely exit the event loops"""
-        return True
+        """Return True while the worker loops should keep iterating."""
+        return not self._stop_event.is_set()
 
     def shutdown(self):
-        """kill eventlets and quit"""
-        for eventlet in self.eventlets:
-            eventlet.kill()
+        """Signal the worker threads to stop and unblock any that are
+        parked in ``Queue.get()`` or ``socket.recv()``.
+        """
+        if self._stop_event.is_set():
+            return
+        self._stop_event.set()
+        # Wake the senders parked in Queue.get(); each one re-checks
+        # ``running()`` after waking and falls out.
+        self.eap_output_messages.put(None)
+        self.radius_output_messages.put(None)
+        # Force the recv side of the EAP/MAB/RADIUS sockets to return.
+        for sock in (self.eap_socket, self.mab_socket, self.radius_socket):
+            if sock is None:
+                continue
+            inner = getattr(sock, "socket", None)
+            if inner is None:
+                continue
+            try:
+                inner.shutdown(2)  # socket.SHUT_RDWR
+            except OSError:
+                pass
 
     def start_threads_and_wait(self):
-        """Start the thread and wait until they complete (hopefully never)"""
-        self.pool = GreenPool()
-
-        self.eventlets.append(self.pool.spawn(self.send_eap_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_eap_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_mab_messages))
-
-        self.eventlets.append(self.pool.spawn(self.send_radius_messages))
-        self.eventlets.append(self.pool.spawn(self.receive_radius_messages))
-
-        self.eventlets.append(self.pool.spawn(self.timer_scheduler.run))
-
-        self.pool.waitall()
+        """Start the worker threads and join them (they should normally never return)."""
+        targets = (
+            self.send_eap_messages,
+            self.receive_eap_messages,
+            self.receive_mab_messages,
+            self.send_radius_messages,
+            self.receive_radius_messages,
+            self.timer_scheduler.run,
+        )
+        self.threads = [
+            threading.Thread(target=t, name=t.__name__, daemon=True) for t in targets
+        ]
+        for thread in self.threads:
+            thread.start()
+        for thread in self.threads:
+            thread.join()
 
     def auth_success(
         self, src_mac, port_id, period, *args, **kwargs
@@ -300,7 +331,8 @@ class Chewie:
 
         for _, state_machine in self.state_machines[port_id_str].items():
             event = EventPortStatusChange(status)
-            state_machine.event(event)
+            with self._sm_lock:
+                state_machine.event(event)
 
     def setup_eap_socket(self):
         """Setup EAP socket"""
@@ -332,8 +364,10 @@ class Chewie:
     def send_eap_messages(self):
         """Send EAP messages to Supplicant forever."""
         while self.running():
-            sleep(0)
             eap_queue_message = self.eap_output_messages.get()
+            if eap_queue_message is None:
+                # Poison pill from shutdown(); fall through to running() check.
+                continue
             self.logger.info(
                 "Sending message %s from %s to %s",
                 eap_queue_message.message,
@@ -358,15 +392,19 @@ class Chewie:
         message_id = -2
         state_machine = self.get_state_machine(src_mac, port_id, message_id)
         event = EventMessageReceived(ethernet_packet, port_id)
-        state_machine.event(event)
+        with self._sm_lock:
+            state_machine.event(event)
         # NOTE: Should probably throttle packets in once one is received
 
     def receive_eap_messages(self):
         """receive eap messages from supplicant forever."""
         while self.running():
-            sleep(0)
             self.logger.info("waiting for eap.")
-            packed_message = self.eap_socket.receive()
+            try:
+                packed_message = self.eap_socket.receive()
+            except OSError:
+                # eap_socket.shutdown() during chewie.shutdown() lands here.
+                break
             self.logger.info("Received packed_message: %s", str(packed_message))
             try:
                 eap, dst_mac = MessageParser.ethernet_parse(packed_message)
@@ -386,9 +424,11 @@ class Chewie:
     def receive_mab_messages(self):
         """Receive DHCP request for MAB."""
         while self.running():
-            sleep(0)
             self.logger.info("waiting for MAB activity.")
-            packed_message = self.mab_socket.receive()
+            try:
+                packed_message = self.mab_socket.receive()
+            except OSError:
+                break
             self.logger.info(
                 "Received DHCP packet for MAB. packed_message: %s", str(packed_message)
             )
@@ -412,13 +452,16 @@ class Chewie:
         else:
             event = EventMessageReceived(eap, dst_mac)
 
-        state_machine.event(event)
+        with self._sm_lock:
+            state_machine.event(event)
 
     def send_radius_messages(self):
         """send RADIUS messages to RADIUS Server forever."""
         while self.running():
-            sleep(0)
             radius_output_bits = self.radius_output_messages.get()
+            if radius_output_bits is None:
+                # Poison pill from shutdown(); fall through to running() check.
+                continue
             packed_message = self.radius_lifecycle.process_outbound(radius_output_bits)
             self.radius_socket.send(packed_message)
             self.logger.info("sent radius message.")
@@ -426,9 +469,11 @@ class Chewie:
     def receive_radius_messages(self):
         """receive RADIUS messages from RADIUS server forever."""
         while self.running():
-            sleep(0)
             self.logger.info("waiting for radius.")
-            packed_message = self.radius_socket.receive()
+            try:
+                packed_message = self.radius_socket.receive()
+            except OSError:
+                break
             try:
                 radius = MessageParser.radius_parse(
                     packed_message, self.radius_secret, self.radius_lifecycle
@@ -449,7 +494,8 @@ class Chewie:
         """sends a radius message to the state machine"""
         event = self.radius_lifecycle.build_event_radius_message_received(radius)
         state_machine = self.get_state_machine_from_radius_packet_id(radius.packet_id)
-        state_machine.event(event)
+        with self._sm_lock:
+            state_machine.event(event)
 
     def get_state_machine_from_radius_packet_id(self, packet_id):
         """Gets a FullEAPStateMachine from the RADIUS message packet_id

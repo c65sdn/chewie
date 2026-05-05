@@ -4,13 +4,13 @@ import logging
 import random
 import sys
 import tempfile
+import threading
+import time
 import unittest
-
+from queue import Queue
 from unittest.mock import patch
-from helpers import FakeTimerScheduler
 
-import eventlet
-from eventlet.queue import Queue
+from helpers import FakeTimerScheduler
 
 from chewie.chewie import Chewie, get_random_id
 from chewie.mac_address import MacAddress
@@ -382,10 +382,9 @@ class ChewieTestCase(unittest.TestCase):
             bytes.fromhex("0000000000010242ac17006f888e01010000")
         )
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
 
-        eventlet.sleep(1)
+        time.sleep(1)
 
         self.assertEqual(
             self.chewie.get_state_machine(
@@ -400,15 +399,14 @@ class ChewieTestCase(unittest.TestCase):
         """test port status api and that identity request is sent after port up"""
 
         global TO_SUPPLICANT
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
-        eventlet.sleep(1)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
+        time.sleep(1)
         self.chewie.port_down("00:00:00:00:00:01")
 
         self.chewie.port_up("00:00:00:00:00:01")
 
         while not self.fake_scheduler.jobs:
-            eventlet.sleep(SHORT_SLEEP)
+            time.sleep(SHORT_SLEEP)
         self.fake_scheduler.run_jobs(num_jobs=1)
 
         # check preemptive sent directly after port up
@@ -421,7 +419,7 @@ class ChewieTestCase(unittest.TestCase):
         FROM_SUPPLICANT.put_nowait(
             bytes.fromhex("0000000000010242ac17006f888e010000050167000501")
         )
-        eventlet.sleep(2)
+        time.sleep(2)
 
         self.assertEqual(
             self.chewie.get_state_machine(
@@ -435,15 +433,14 @@ class ChewieTestCase(unittest.TestCase):
         """test port status api and that identity request is sent after port up"""
 
         global TO_SUPPLICANT
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
-        eventlet.sleep(1)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
+        time.sleep(1)
         self.chewie.port_down("00:00:00:00:00:01")
 
         self.chewie.port_up("00:00:00:00:00:01")
 
         while not self.fake_scheduler.jobs:
-            eventlet.sleep(SHORT_SLEEP)
+            time.sleep(SHORT_SLEEP)
         self.fake_scheduler.run_jobs(num_jobs=1)
         # check preemptive sent directly after port up
         out_packet = TO_SUPPLICANT.get()
@@ -481,10 +478,9 @@ class ChewieTestCase(unittest.TestCase):
             bytes.fromhex("0000000000010242ac17006f888e01010000")
         )
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
 
-        eventlet.sleep(SHORT_SLEEP)
+        time.sleep(SHORT_SLEEP)
 
         self.assertEqual(
             self.chewie.get_state_machine(
@@ -510,11 +506,16 @@ class ChewieTestCase(unittest.TestCase):
             bytes.fromhex("0000000000010242ac17006f888e01010000")
         )
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
 
         while not self.fake_scheduler.jobs:
-            eventlet.sleep(SHORT_SLEEP)
+            time.sleep(SHORT_SLEEP)
+        # Stop chewie before draining jobs. Under the previous eventlet
+        # model the test relied on the chewie greenlet not advancing
+        # while the test thread was running; with real OS threads chewie
+        # would otherwise keep consuming the bad-message-id replies in
+        # parallel and shuffle the state machine past TIMEOUT_FAILURE.
+        self.chewie.shutdown()
         self.fake_scheduler.run_jobs()
 
         self.assertEqual(
@@ -538,11 +539,10 @@ class ChewieTestCase(unittest.TestCase):
             bytes.fromhex("0000000000010242ac17006f888e01010000")
         )
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
 
         while not self.fake_scheduler.jobs:
-            eventlet.sleep(SHORT_SLEEP)
+            time.sleep(SHORT_SLEEP)
         self.fake_scheduler.run_jobs()
 
         self.assertEqual(
@@ -568,10 +568,9 @@ class ChewieTestCase(unittest.TestCase):
             )
         )
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
 
-        eventlet.sleep(SHORT_SLEEP)
+        time.sleep(SHORT_SLEEP)
 
         self.assertEqual(
             self.chewie.get_state_machine(
@@ -597,10 +596,9 @@ class ChewieTestCase(unittest.TestCase):
             )
         )
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
 
-        eventlet.sleep(SHORT_SLEEP)
+        time.sleep(SHORT_SLEEP)
 
         self.assertEqual(
             self.chewie.get_state_machine(
@@ -626,10 +624,9 @@ class ChewieTestCase(unittest.TestCase):
             )
         )
 
-        pool = eventlet.GreenPool()
-        pool.spawn(self.chewie.run)
+        threading.Thread(target=self.chewie.run, daemon=True).start()
 
-        eventlet.sleep(SHORT_SLEEP)
+        time.sleep(SHORT_SLEEP)
 
         self.assertEqual(
             self.chewie.get_state_machine(
