@@ -1,2 +1,2 @@
-pbr>=7.0.3
+pbr>=7.1.3
 transitions
